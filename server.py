@@ -81,7 +81,6 @@ def create_gmail_draft(company, target_email=""):
 
     if not user or not password: return "No Credentials"
     
-    # Strict Rule: Must have a valid target email to create a draft
     if not target_email or "@" not in target_email or target_email.lower() == user.lower():
         return "No Target Email"
     
@@ -103,103 +102,80 @@ def create_gmail_draft(company, target_email=""):
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Global Scraper Active...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 DEEP Crawler Active...")
     discovered_leads = []
-    
-    # Using real browser headers to prevent blocks
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
     }
-    
-    # Strict regex: domain extensions must be between 2 and 7 letters (prevents .composition errors)
-    email_regex = r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,7}\b"
-    
-    # 1. Search Global Web & Facebook via DuckDuckGo HTML (Bypasses Google/Bing blocks)
-    search_queries = [
-        'site:facebook.com "English teacher" China hiring email "@gmail.com"',
-        'site:facebook.com "ESL teacher" China email "@yahoo.com"',
-        '"ESL teacher" China hiring "send resume" "@"'
-    ]
-    
-    for query in search_queries:
-        try:
-            # DuckDuckGo HTML version is scraper-friendly
-            res = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "html.parser")
-                
-                for a in soup.find_all('a', class_='result__snippet'):
-                    snippet = a.get_text(strip=True)
-                    href = a.get('href', '')
-                    
-                    # Clean up DuckDuckGo redirect URLs
-                    if href.startswith('//'): href = 'https:' + href
-                    if "uddg=" in href:
-                        parsed = urllib.parse.urlparse(href)
-                        qs = urllib.parse.parse_qs(parsed.query)
-                        if 'uddg' in qs:
-                            href = qs['uddg'][0]
-                    
-                    # Only add if an email is found in the search text!
-                    match = re.search(email_regex, snippet)
-                    if match:
-                        discovered_leads.append({
-                            "company": "Web Opportunity", "url": href[:200], 
-                            "students": "Global Web", "pay": "Negotiable", 
-                            "requirements": json.dumps(["Web Search"]), "tags": json.dumps(["Facebook/Web"]), 
-                            "status": "Found", "email": match.group(0)
-                        })
-        except Exception as e:
-            print(f"Web Search Error: {e}")
+    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,7}"
 
-    # 2. Standard ESL Targets
-    targets = [
-        "https://www.eslcafe.com/jobs/china",
-        "https://www.eslcafe.com/jobs/international"
-    ]
-    
-    for url in targets:
-        try:
-            res = requests.get(url, headers=headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "html.parser")
-                for link in soup.find_all("a", href=True):
-                    title = link.get_text(strip=True)
-                    if len(title) > 8 and any(k in title.lower() for k in ["esl", "english", "teacher", "china"]):
-                        href = link["href"]
-                        full_url = href if href.startswith("http") else f"https://www.eslcafe.com{href}"
-                        
-                        extracted_email = ""
-                        match = re.search(email_regex, title)
-                        if match: extracted_email = match.group(0)
+    # 1. شبکه های اجتماعی و انجمن ها (پیدا کردن سریع ایمیل های مستقیم)
+    try:
+        res = requests.get("https://www.reddit.com/r/TEFL+teachinginchina/new.json?limit=30", headers=headers, timeout=15)
+        if res.status_code == 200:
+            posts = res.json().get('data', {}).get('children', [])
+            for p in posts:
+                post_data = p['data']
+                text = post_data.get('selftext', '') + " " + post_data.get('title', '')
+                match = re.search(email_regex, text)
+                if match:
+                    discovered_leads.append({
+                        "company": post_data.get('title', '')[:35],
+                        "url": "https://reddit.com" + post_data.get('permalink', ''),
+                        "students": "Social Post", "pay": "TBD",
+                        "requirements": json.dumps(["Social Media"]), "tags": json.dumps(["Direct Email"]),
+                        "status": "Hiring", "email": match.group(0)
+                    })
+    except Exception as e:
+        pass
 
-                        if extracted_email:
-                            discovered_leads.append({
-                                "company": title.split("-")[0].strip()[:35], "url": full_url, 
-                                "students": "Various", "pay": "Negotiable", 
-                                "requirements": json.dumps(["BA Degree"]), "tags": json.dumps(["ESL Hub"]), 
-                                "status": "Actively Hiring", "email": extracted_email
-                            })
-        except Exception as e:
-            pass
+    # 2. جستجوی عمیق سایت های ESL (وارد شدن به داخل آگهی ها)
+    try:
+        res = requests.get("https://www.eslcafe.com/jobs/china", headers=headers, timeout=15)
+        soup = BeautifulSoup(res.text, "html.parser")
+        links = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if '/job/' in href or 'jobs/china' in href:
+                links.append(href if href.startswith("http") else "https://www.eslcafe.com" + href)
+        
+        # ربات وارد 12 آگهی جدید می شود و متن کامل آنها را می خواند
+        for link in list(set(links))[:12]:
+            try:
+                job_res = requests.get(link, headers=headers, timeout=10)
+                job_soup = BeautifulSoup(job_res.text, "html.parser")
+                text = job_soup.get_text()
+                match = re.search(email_regex, text)
+                if match:
+                    company_name = job_soup.title.string.split('-')[0].strip()[:35] if job_soup.title else "ESL School"
+                    discovered_leads.append({
+                        "company": company_name, "url": link,
+                        "students": "China Job", "pay": "Negotiable",
+                        "requirements": json.dumps(["Degree"]), "tags": json.dumps(["Deep Scan"]),
+                        "status": "Actively Hiring", "email": match.group(0)
+                    })
+            except:
+                pass
+    except Exception as e:
+        pass
 
+    # ذخیره و ارسال
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
     for lead in discovered_leads:
         try:
-            draft_status = create_gmail_draft(lead["company"], lead.get("email", ""))
-            
-            # Save to DB only if a target email was found and draft wasn't skipped
-            if draft_status != "No Target Email":
-                c.execute(
-                    "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
-                )
-                conn.commit()
-                send_telegram(lead["company"], lead["url"], lead["pay"], lead["email"])
+            if lead["email"]:
+                draft_status = create_gmail_draft(lead["company"], lead["email"])
+                if draft_status != "No Target Email" and draft_status != "Failed":
+                    c.execute(
+                        "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
+                    )
+                    conn.commit()
+                    send_telegram(lead["company"], lead["url"], lead["pay"])
         except sqlite3.IntegrityError:
-            pass # Skips duplicate URLs silently
+            pass # نادیده گرفتن تکراری ها
     conn.close()
 
 @app.route("/api/leads", methods=["GET"])
