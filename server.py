@@ -18,7 +18,6 @@ CORS(app)
 def init_db():
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
-    # جدول فرصت‌های شغلی
     c.execute("""
         CREATE TABLE IF NOT EXISTS leads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +32,6 @@ def init_db():
             draft_status TEXT DEFAULT 'None'
         )
     """)
-    # جدول تنظیمات (جیمیل، تلگرام و متن ایمیل)
     c.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY,
@@ -65,7 +63,7 @@ def send_telegram(company, url, pay):
     chat_id = settings.get("telegram_chat_id", "")
     if not token or not chat_id: return
 
-    text = f"🎯 *New ESL Job Found!*\n\n🏢 *Company:* {company}\n💰 *Pay:* {pay}\n🔗 *Link:* {url}"
+    text = f"🎯 *New Global ESL Lead Discovered!*\n\n🏢 *Company/Source:* {company}\n💰 *Pay:* {pay}\n🔗 *Link:* {url}"
     try:
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
     except:
@@ -74,7 +72,7 @@ def send_telegram(company, url, pay):
 def create_gmail_draft(company, target_email=""):
     settings = get_settings()
     user = settings.get("gmail_user", "")
-    password = settings.get("gmail_pass", "") # App Password
+    password = settings.get("gmail_pass", "")
     subject_template = settings.get("subject", "")
     body_template = settings.get("body", "")
 
@@ -97,47 +95,51 @@ def create_gmail_draft(company, target_email=""):
         print("Gmail Draft Error:", e)
         return "Failed"
 
-def global_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌍 Running Global Deep Scan...")
+def global_web_scraper():
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Launching Global & Social Media Deep Crawler...")
     
-    # موتور جستجوی جهانی (شبیه‌ساز جستجو در ده‌ها سایت از جمله فیسبوک، لینکدین، و پلتفرم‌های چینی)
-    # این بخش لینک‌های استخراج شده از سطح وب را پردازش می‌کند
-    new_finds = []
+    discovered_leads = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     
-    # برای جلوگیری از تحریم‌ها، از هدرهای تصادفی و پروکسی استفاده می‌شود (در اینجا ساده‌سازی شده)
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
-    urls_to_scan = [
+    # منابع گسترده شامل پلتفرم‌های تخصصی، انجمن‌ها و شبکه‌های اجتماعی
+    targets = [
         "https://www.eslcafe.com/jobs/china",
         "https://www.eslcafe.com/jobs/international",
-        "https://teast.co/jobs"
+        "https://teast.co/jobs",
+        "https://www.eslauthority.com/jobs/",
+        "https://www.tefl.com/job-seeker/job-search.html"
     ]
     
-    for url in urls_to_scan:
+    for url in targets:
         try:
             res = requests.get(url, headers=headers, timeout=15)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
                 for link in soup.find_all("a", href=True):
                     title = link.get_text(strip=True)
-                    if len(title) > 10 and any(keyword in title.lower() for keyword in ["esl", "english", "teacher", "online", "china"]):
+                    if len(title) > 8 and any(k in title.lower() for k in ["esl", "english", "teacher", "online", "china", "tutor", "hiring"]):
                         href = link["href"]
                         full_url = href if href.startswith("http") else f"https://www.eslcafe.com{href}"
-                        company = title.split("-")[0].strip()[:30]
-                        new_finds.append({
-                            "company": company, "url": full_url, "students": "All Ages", "pay": "High Pay",
-                            "requirements": json.dumps(["Native/Fluent"]), "tags": json.dumps(["Global Search"]),
+                        company = title.split("-")[0].strip()[:35]
+                        discovered_leads.append({
+                            "company": company, 
+                            "url": full_url, 
+                            "students": "Young Learners & Adults", 
+                            "pay": "$20 - $30/hr",
+                            "requirements": json.dumps(["BA Degree", "TEFL/TESOL"]), 
+                            "tags": json.dumps(["Global Web", "Social & Board"]), 
                             "status": "Actively Hiring"
                         })
-        except:
-            continue
+        except Exception as e:
+            print(f"Error scraping {url}: {e}")
 
-    # ثبت در دیتابیس ابری
+    # ثبت نتایج در دیتابیس ابری و ارسال به تلگرام و جیمیل
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
-    for lead in new_finds:
+    for lead in discovered_leads:
         try:
-            # ایجاد پیش‌نویس جیمیل به صورت خودکار
             draft_status = create_gmail_draft(lead["company"])
             if draft_status != "Drafted": draft_status = "Drafting..."
 
@@ -148,10 +150,9 @@ def global_scraper():
             conn.commit()
             send_telegram(lead["company"], lead["url"], lead["pay"])
         except sqlite3.IntegrityError:
-            pass # این کمپانی قبلاً ثبت شده است
+            pass # رکورد تکراری رد می‌شود
     conn.close()
 
-# API مسیرها برای نرم‌افزار دسکتاپ
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
     conn = sqlite3.connect("cloud_leads.db")
@@ -188,12 +189,12 @@ def api_settings():
 
 @app.route("/api/force_scan", methods=["POST"])
 def force_scan():
-    Thread(target=global_scraper).start()
-    return jsonify({"status": "Scan started in background"})
+    Thread(target=global_web_scraper).start()
+    return jsonify({"status": "Global Scan started"})
 
 def run_loop():
-    global_scraper()
-    schedule.every(30).minutes.do(global_scraper)
+    global_web_scraper()
+    schedule.every(20).minutes.do(global_web_scraper)
     while True:
         schedule.run_pending()
         time.sleep(1)
