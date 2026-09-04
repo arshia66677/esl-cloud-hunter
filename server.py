@@ -55,38 +55,21 @@ def get_settings():
     row = c.fetchone()
     conn.close()
     if row:
-        return {
-            "subject": row[0], "body": row[1], 
-            "gmail_user": row[2].strip() if row[2] else "", 
-            "gmail_pass": row[3].strip() if row[3] else "", 
-            "telegram_token": row[4].strip() if row[4] else "", 
-            "telegram_chat_id": row[5].strip() if row[5] else ""
-        }
+        return {"subject": row[0], "body": row[1], "gmail_user": row[2], "gmail_pass": row[3], "telegram_token": row[4], "telegram_chat_id": row[5]}
     return {}
 
-def send_telegram(company, url, pay, is_test=False, email=""):
+def send_telegram(company, url, pay, email):
     settings = get_settings()
     token = settings.get("telegram_token", "")
     chat_id = settings.get("telegram_chat_id", "")
     if not token or not chat_id: 
-        print("Telegram Warning: Token or Chat ID is missing.")
-        return False
+        return
 
-    if is_test:
-        text = "✅ ESL Hunter Pro: System Connected!\nYour Telegram is successfully linked to the Cloud Engine."
-    else:
-        text = f"🎯 New Global ESL Opportunity!\n\n🏢 Company: {company}\n📧 Email Found: {email}\n💰 Pay: {pay}\n🔗 Link: {url}"
-    
+    text = f"🎯 New ESL Opportunity!\n\n🏢 Company: {company}\n💰 Pay: {pay}\n📧 Email: {email}\n🔗 Link: {url}"
     try:
-        res = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage", 
-            json={"chat_id": chat_id, "text": text}, 
-            timeout=10
-        )
-        return True
+        requests.post(f"https://api.telegram.org/bot{token.strip()}/sendMessage", json={"chat_id": chat_id.strip(), "text": text}, timeout=10)
     except Exception as e:
         print("Telegram Send Error:", e)
-        return False
 
 def create_gmail_draft(company, target_email=""):
     settings = get_settings()
@@ -97,9 +80,9 @@ def create_gmail_draft(company, target_email=""):
 
     if not user or not password: return "No Credentials"
     
-    # اطمینان از اینکه ایمیل مقصد وجود دارد و ایمیل خودمان نیست
+    # Strict rule: Must have email, and it must not be user's own email
     if not target_email or "@" not in target_email or target_email.lower() == user.lower():
-        return "Skipped - No Target Email"
+        return "No Target Email"
     
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
@@ -121,11 +104,12 @@ def create_gmail_draft(company, target_email=""):
 def global_web_scraper():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Global Search Engine Active...")
     discovered_leads = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
-    # این فرمول (Regex) جدید ایمیل را مجبور می‌کند که به دامنه ۲ تا ۷ حرفی (مثل .com یا .online) ختم شود تا اشتباه نکند
+    # Strict Regex: domain extension between 2 and 7 chars to avoid things like .composition
     email_regex = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,7}\b"
     
+    # 1. Standard ESL Targets
     targets = [
         "https://www.eslcafe.com/jobs/china",
         "https://www.eslcafe.com/jobs/international",
@@ -153,39 +137,63 @@ def global_web_scraper():
 
                         if extracted_email:
                             discovered_leads.append({
-                                "company": title.split("-")[0].strip()[:35], "url": full_url, 
-                                "students": "Various", "pay": "$20-$30/hr", 
-                                "requirements": json.dumps(["BA Degree"]), "tags": json.dumps(["Job Board"]), 
-                                "status": "Actively Hiring", "email": extracted_email
+                                "company": title.split("-")[0].strip()[:35], "url": full_url, "students": "Various", 
+                                "pay": "Negotiable", "requirements": json.dumps(["BA Degree"]), 
+                                "tags": json.dumps(["Job Board"]), "status": "Actively Hiring",
+                                "email": extracted_email
                             })
         except Exception as e:
             pass
 
-    # ذخیره و ارسال امن به تلگرام بدون گیر کردن روی لینک‌های تکراری
+    # 2. Bing Search for Facebook & Global Web
+    search_queries = [
+        "site:facebook.com 'English teacher' China hiring '@gmail.com'",
+        "site:facebook.com 'ESL teacher' China email '@'",
+        "'ESL teacher' China 'send resume' '@'"
+    ]
+    
+    for query in search_queries:
+        try:
+            res = requests.get("https://www.bing.com/search", params={"q": query}, headers=headers, timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                for result in soup.find_all("li", class_="b_algo"):
+                    title_tag = result.find("h2")
+                    link_tag = result.find("a", href=True)
+                    snippet_tag = result.find("div", class_="b_caption")
+                    
+                    if title_tag and link_tag:
+                        title = title_tag.get_text(strip=True)
+                        full_url = link_tag["href"]
+                        snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
+                        
+                        match = re.search(email_regex, title + " " + snippet)
+                        if match:
+                            discovered_leads.append({
+                                "company": title[:30] + "...", "url": full_url, 
+                                "students": "Global Web", "pay": "Negotiable", 
+                                "requirements": json.dumps(["Web Search"]), "tags": json.dumps(["Facebook/Web"]), 
+                                "status": "Found", "email": match.group(0)
+                            })
+        except Exception as e:
+            pass
+
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
-    
     for lead in discovered_leads:
-        # بررسی می‌کنیم آیا قبلا در دیتابیس هست؟
-        c.execute("SELECT id FROM leads WHERE url=?", (lead["url"],))
-        if c.fetchone():
-            continue # اگر بود، کلا ازش رد شو
-
         try:
             draft_status = create_gmail_draft(lead["company"], lead.get("email", ""))
             
-            c.execute(
-                "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
-            )
-            conn.commit()
-            
-            # ارسال تلگرام با جزئیات کامل و ایمیل پیدا شده
-            if "Skipped" not in draft_status:
-                send_telegram(lead["company"], lead["url"], lead["pay"], is_test=False, email=lead.get("email", ""))
-        except Exception as e:
-            pass
-            
+            # Only record and send telegram if draft wasn't skipped due to no target email
+            if draft_status != "No Target Email":
+                c.execute(
+                    "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
+                )
+                conn.commit()
+                send_telegram(lead["company"], lead["url"], lead["pay"], lead["email"])
+        except sqlite3.IntegrityError:
+            pass # Skip duplicates so we don't spam
     conn.close()
 
 @app.route("/api/leads", methods=["GET"])
@@ -213,9 +221,14 @@ def api_settings():
         conn.commit()
         conn.close()
         
-        # وقتی دکمه Save زده شد، یک پیام تست به تلگرام بفرست
-        Thread(target=send_telegram, args=("Test", "Test", "Test", True)).start()
-        
+        # Send Test Message to Telegram when settings are saved
+        token = data.get("telegram_token", "").strip()
+        chat_id = data.get("telegram_chat_id", "").strip()
+        if token and chat_id:
+            try:
+                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected! Everything is ready."}, timeout=5)
+            except: pass
+            
         return jsonify({"status": "success"})
     return jsonify(get_settings())
 
