@@ -5,6 +5,7 @@ import schedule
 import requests
 import imaplib
 import json
+import re
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
@@ -63,7 +64,7 @@ def send_telegram(company, url, pay):
     chat_id = settings.get("telegram_chat_id", "")
     if not token or not chat_id: return
 
-    text = f"🎯 *New Global ESL Lead!*\n\n🏢 *Company:* {company}\n💰 *Pay:* {pay}\n🔗 *Link:* {url}"
+    text = f"🎯 *New ESL Opportunity!*\n\n🏢 *Company:* {company}\n💰 *Pay:* {pay}\n🔗 *Link:* {url}"
     try:
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
     except:
@@ -78,6 +79,10 @@ def create_gmail_draft(company, target_email=""):
 
     if not user or not password: return "No Credentials"
     
+    # اگر ایمیل معتبر شرکت وجود نداشت یا ایمیل خودتان بود، اصلاً پیش‌نویس ساخته نمی‌شود
+    if not target_email or "@" not in target_email or target_email.lower() == user.lower():
+        return "No Target Email"
+    
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
         mail.login(user, password)
@@ -85,15 +90,8 @@ def create_gmail_draft(company, target_email=""):
         msg = EmailMessage()
         msg['Subject'] = subject_template.replace("{company}", company)
         msg['From'] = user
-        
-        # اگر ایمیل مقصد پیدا نشد، ایمیل را خالی نمی گذاریم تا ارور ندهد
-        if target_email and "@" in target_email:
-            msg['To'] = target_email
-        else:
-            msg['To'] = user # پیش فرض به خودتان یا فیلد خالی
-            
-        final_body = body_template.replace("{company}", company) + f"\n\n[Opportunity Source / URL attached for reference]"
-        msg.set_content(final_body)
+        msg['To'] = target_email
+        msg.set_content(body_template.replace("{company}", company))
         
         mail.append('[Gmail]/Drafts', '', imaplib.Time2Internaldate(time.time()), str(msg).encode('utf-8'))
         mail.logout()
@@ -103,9 +101,10 @@ def create_gmail_draft(company, target_email=""):
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Running Crawler...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Smart Crawler Active...")
     discovered_leads = []
     headers = {"User-Agent": "Mozilla/5.0"}
+    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
     
     targets = [
         "https://www.eslcafe.com/jobs/china",
@@ -125,12 +124,13 @@ def global_web_scraper():
                         full_url = href if href.startswith("http") else f"https://www.eslcafe.com{href}"
                         company = title.split("-")[0].strip()[:35]
                         
-                        # استخراج ایمیل از متن صفحه در صورت وجود
                         extracted_email = ""
-                        for text in soup.stripped_strings:
-                            if "@" in text and "." in text and " " not in text and len(text) < 40:
-                                extracted_email = text
-                                break
+                        if href.startswith("mailto:"):
+                            extracted_email = href.replace("mailto:", "").split("?")[0].strip()
+                        else:
+                            match = re.search(email_regex, title)
+                            if match:
+                                extracted_email = match.group(0)
 
                         discovered_leads.append({
                             "company": company, "url": full_url, "students": "Young Learners", 
@@ -198,5 +198,5 @@ def run_loop():
 if __name__ == "__main__":
     init_db()
     Thread(target=run_loop, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.0.get("PORT", 10000) if "PORT" in os.environ else 10000)
     app.run(host="0.0.0.0", port=port)
