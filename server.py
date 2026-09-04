@@ -11,7 +11,6 @@ from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from threading import Thread
-from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 CORS(app)
@@ -58,20 +57,19 @@ def get_settings():
         return {"subject": row[0], "body": row[1], "gmail_user": row[2], "gmail_pass": row[3], "telegram_token": row[4], "telegram_chat_id": row[5]}
     return {}
 
-def send_telegram(company, url, pay, found_email):
+def send_telegram(email_found, source_query):
     settings = get_settings()
     token = settings.get("telegram_token", "").strip()
     chat_id = settings.get("telegram_chat_id", "").strip()
     if not token or not chat_id: return
 
-    # Simple text format to prevent ANY markdown errors
-    text = f"🚨 NEW ESL JOB FOUND!\n\n🏢 Source/Company: {company}\n📧 Email Found: {found_email}\n💰 Pay: {pay}\n🔗 Link: {url}"
+    text = f"🌍 GLOBAL WEB LEAD FOUND!\n\n📧 Target Email: {email_found}\n🔍 Source: Found via Search Engine\n🔗 Search Query: {source_query}\n\n✅ Draft created in your Gmail!"
     try:
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
-        print("Telegram Error:", e)
+        print("Telegram Send Error:", e)
 
-def create_gmail_draft(company, target_email=""):
+def create_gmail_draft(target_email):
     settings = get_settings()
     user = settings.get("gmail_user", "").strip()
     password = settings.get("gmail_pass", "").strip()
@@ -79,113 +77,104 @@ def create_gmail_draft(company, target_email=""):
     body_template = settings.get("body", "")
 
     if not user or not password: return "No Credentials"
-    if not target_email or "@" not in target_email or target_email.lower() == user.lower():
-        return "No Target Email"
+    if not target_email or "@" not in target_email: return "Invalid Email"
+    if target_email.lower() == user.lower(): return "Same as user email"
     
+    # فیلتر کردن دامنه‌های اشتباه (مثل .composition)
+    domain_part = target_email.split(".")[-1]
+    if len(domain_part) > 7: return "Invalid Domain"
+
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
         mail.login(user, password)
         
         msg = EmailMessage()
-        msg['Subject'] = subject_template.replace("{company}", company)
+        company_placeholder = target_email.split("@")[0].capitalize()
+        msg['Subject'] = subject_template.replace("{company}", company_placeholder)
         msg['From'] = user
         msg['To'] = target_email
-        msg.set_content(body_template.replace("{company}", company))
+        msg.set_content(body_template.replace("{company}", company_placeholder))
         
         mail.append('[Gmail]/Drafts', '', imaplib.Time2Internaldate(time.time()), str(msg).encode('utf-8'))
         mail.logout()
-        return "Draft Created"
+        return "Drafted"
     except Exception as e:
-        print("Gmail Error:", e)
-        return "Draft Failed"
+        print("Gmail Draft Error:", e)
+        return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Aggressive Crawler Started...")
-    discovered_leads = []
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 THE WHOLE INTERNET SEARCH ENGINE STARTED...")
+    settings = get_settings()
+    user_email = settings.get("gmail_user", "").lower().strip()
     
-    # Very relaxed email regex, allows standard domains up to 10 chars
-    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,10}"
-    
-    # Headers to bypass bot protections
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
-    api_headers = {"User-Agent": "ESLHunterBot/2.0"}
-
-    # 1. Scraping Reddit (Highly reliable for getting real text without blocks)
-    reddit_urls = [
-        "https://www.reddit.com/r/teachinginchina/new.json?limit=30",
-        "https://www.reddit.com/r/TEFL/new.json?limit=30",
-        "https://www.reddit.com/r/OnlineESLTeaching/new.json?limit=30"
+    # این عبارات کل فیسبوک، لینکدین و اینترنت را می‌گردند
+    search_queries = [
+        'site:facebook.com "English teacher" China hiring "@"',
+        '"ESL teacher" China hiring "send your CV" "@"',
+        'site:linkedin.com "English teacher" hiring "@"',
+        '"online English tutor" hiring "contact" "@"',
+        '"teach English in China" recruiter email "@"'
     ]
-    for url in reddit_urls:
-        try:
-            res = requests.get(url, headers=api_headers, timeout=15)
-            if res.status_code == 200:
-                posts = res.json().get('data', {}).get('children', [])
-                for p in posts:
-                    data = p['data']
-                    text = str(data.get('selftext', '')) + " " + str(data.get('title', ''))
-                    emails = re.findall(email_regex, text)
-                    if emails:
-                        discovered_leads.append({
-                            "company": str(data.get('title', ''))[:35],
-                            "url": "https://reddit.com" + str(data.get('permalink', '')),
-                            "students": "Reddit Post", "pay": "Check Post",
-                            "requirements": json.dumps(["See Details"]), "tags": json.dumps(["Social Media"]),
-                            "status": "Found Email", "email": emails[0]
-                        })
-        except: pass
+    
+    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,7}"
+    discovered_leads = []
+    unique_emails = set()
 
-    # 2. Aggressive Deep Scan of ESL Cafe
-    esl_sources = ["https://www.eslcafe.com/jobs/china", "https://www.eslcafe.com/jobs/international"]
-    for url in esl_sources:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
+
+    # استفاده از موتور جستجوی سبک برای جلوگیری از بلاک شدن توسط فایروال‌ها
+    for query in search_queries:
         try:
-            res = requests.get(url, headers=headers, timeout=15)
-            soup = BeautifulSoup(res.text, "html.parser")
-            links = []
-            for a in soup.find_all("a", href=True):
-                if "/job/" in a["href"] or "jobs/" in a["href"]:
-                    full_link = a["href"] if a["href"].startswith("http") else "https://www.eslcafe.com" + a["href"]
-                    links.append(full_link)
+            url = "https://lite.duckduckgo.com/lite/"
+            payload = {'q': query}
+            res = requests.post(url, data=payload, headers=headers, timeout=15)
             
-            # Go deep into the first 12 unique job ads
-            for link in list(set(links))[:12]:
-                try:
-                    job_res = requests.get(link, headers=headers, timeout=10)
-                    job_soup = BeautifulSoup(job_res.text, "html.parser")
-                    text = job_soup.get_text(separator=" ")
-                    emails = re.findall(email_regex, text)
-                    if emails:
-                        title = job_soup.title.string.split('-')[0].strip()[:35] if job_soup.title else "ESL Opportunity"
+            if res.status_code == 200:
+                # استخراج هجومی تمام ایمیل‌های موجود در صفحه نتایج کل وب
+                found_emails = re.findall(email_regex, res.text)
+                for email in found_emails:
+                    email = email.lower()
+                    # فیلتر کردن ایمیل‌های نامعتبر، تکراری یا ایمیل خود شما
+                    if email not in unique_emails and email != user_email and "example" not in email and "yourdomain" not in email:
+                        unique_emails.add(email)
                         discovered_leads.append({
-                            "company": title, "url": link, "students": "ESL Cafe", 
-                            "pay": "Negotiable", "requirements": json.dumps(["Degree"]), 
-                            "tags": json.dumps(["Deep Scan"]), "status": "Hiring",
-                            "email": emails[0]
+                            "company": "Global Web Lead",
+                            "url": f"Query: {query}",
+                            "students": "Global Search",
+                            "pay": "Negotiable",
+                            "requirements": json.dumps(["Global Match"]),
+                            "tags": json.dumps(["Web/Facebook"]),
+                            "status": "Found",
+                            "email": email
                         })
-                except: pass
-        except: pass
-
+        except Exception as e:
+            print(f"Search Engine Error: {e}")
+            
+    # ذخیره در دیتابیس و ارسال به تلگرام/جیمیل
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
     for lead in discovered_leads:
-        try:
-            # Create draft first
-            draft_status = create_gmail_draft(lead["company"], lead["email"])
+        # ساخت یک URL یکتا برای دیتابیس تا خطا ندهد
+        unique_db_url = lead["email"] 
+        
+        # بررسی اینکه آیا این ایمیل قبلاً در دیتابیس ثبت شده یا نه
+        c.execute("SELECT id FROM leads WHERE url = ?", (unique_db_url,))
+        if not c.fetchone():
+            draft_status = create_gmail_draft(lead["email"])
             
-            # Insert into database (if it's a duplicate URL, this will throw IntegrityError and skip)
-            c.execute(
-                "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
-            )
-            conn.commit()
-            
-            # Send Telegram Alert ONLY if it's a brand new lead successfully added to DB
-            send_telegram(lead["company"], lead["url"], lead["pay"], lead["email"])
-            
-        except sqlite3.IntegrityError:
-            pass # Already exists in database, ignore it
+            # فقط اگر پیش‌نویس موفق بود یا ایمیل معتبر بود در لیست می‌آید
+            if draft_status == "Drafted":
+                c.execute(
+                    "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (lead["company"], unique_db_url, lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
+                )
+                conn.commit()
+                send_telegram(lead["email"], lead["url"])
     conn.close()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Scan Complete.")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ GLOBAL SEARCH COMPLETE.")
 
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
@@ -212,12 +201,12 @@ def api_settings():
         conn.commit()
         conn.close()
         
-        # Test Telegram Message on save
+        # Test Telegram
         token = data.get("telegram_token", "").strip()
         chat_id = data.get("telegram_chat_id", "").strip()
         if token and chat_id:
             try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected and Ready!"}, timeout=5)
+                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected to Global Search!"}, timeout=5)
             except: pass
             
         return jsonify({"status": "success"})
