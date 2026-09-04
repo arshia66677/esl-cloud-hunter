@@ -6,7 +6,6 @@ import requests
 import imaplib
 import json
 import re
-import urllib.parse
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
@@ -59,28 +58,27 @@ def get_settings():
         return {"subject": row[0], "body": row[1], "gmail_user": row[2], "gmail_pass": row[3], "telegram_token": row[4], "telegram_chat_id": row[5]}
     return {}
 
-def send_telegram(company, url, pay, email=""):
+def send_telegram(company, url, pay, found_email):
     settings = get_settings()
     token = settings.get("telegram_token", "").strip()
     chat_id = settings.get("telegram_chat_id", "").strip()
-    if not token or not chat_id: 
-        return
+    if not token or not chat_id: return
 
-    text = f"🎯 New ESL Opportunity!\n\n🏢 Company/Source: {company}\n💰 Pay: {pay}\n📧 Email Found: {email}\n🔗 Link: {url}"
+    # Simple text format to prevent ANY markdown errors
+    text = f"🚨 NEW ESL JOB FOUND!\n\n🏢 Source/Company: {company}\n📧 Email Found: {found_email}\n💰 Pay: {pay}\n🔗 Link: {url}"
     try:
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
-        print("Telegram Send Error:", e)
+        print("Telegram Error:", e)
 
 def create_gmail_draft(company, target_email=""):
     settings = get_settings()
-    user = settings.get("gmail_user", "")
-    password = settings.get("gmail_pass", "")
+    user = settings.get("gmail_user", "").strip()
+    password = settings.get("gmail_pass", "").strip()
     subject_template = settings.get("subject", "")
     body_template = settings.get("body", "")
 
     if not user or not password: return "No Credentials"
-    
     if not target_email or "@" not in target_email or target_email.lower() == user.lower():
         return "No Target Email"
     
@@ -96,87 +94,98 @@ def create_gmail_draft(company, target_email=""):
         
         mail.append('[Gmail]/Drafts', '', imaplib.Time2Internaldate(time.time()), str(msg).encode('utf-8'))
         mail.logout()
-        return "Drafted"
+        return "Draft Created"
     except Exception as e:
-        print("Gmail Draft Error:", e)
-        return "Failed"
+        print("Gmail Error:", e)
+        return "Draft Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 DEEP Crawler Active...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Aggressive Crawler Started...")
     discovered_leads = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    }
-    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,7}"
+    
+    # Very relaxed email regex, allows standard domains up to 10 chars
+    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,10}"
+    
+    # Headers to bypass bot protections
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
+    api_headers = {"User-Agent": "ESLHunterBot/2.0"}
 
-    # 1. شبکه های اجتماعی و انجمن ها (پیدا کردن سریع ایمیل های مستقیم)
-    try:
-        res = requests.get("https://www.reddit.com/r/TEFL+teachinginchina/new.json?limit=30", headers=headers, timeout=15)
-        if res.status_code == 200:
-            posts = res.json().get('data', {}).get('children', [])
-            for p in posts:
-                post_data = p['data']
-                text = post_data.get('selftext', '') + " " + post_data.get('title', '')
-                match = re.search(email_regex, text)
-                if match:
-                    discovered_leads.append({
-                        "company": post_data.get('title', '')[:35],
-                        "url": "https://reddit.com" + post_data.get('permalink', ''),
-                        "students": "Social Post", "pay": "TBD",
-                        "requirements": json.dumps(["Social Media"]), "tags": json.dumps(["Direct Email"]),
-                        "status": "Hiring", "email": match.group(0)
-                    })
-    except Exception as e:
-        pass
+    # 1. Scraping Reddit (Highly reliable for getting real text without blocks)
+    reddit_urls = [
+        "https://www.reddit.com/r/teachinginchina/new.json?limit=30",
+        "https://www.reddit.com/r/TEFL/new.json?limit=30",
+        "https://www.reddit.com/r/OnlineESLTeaching/new.json?limit=30"
+    ]
+    for url in reddit_urls:
+        try:
+            res = requests.get(url, headers=api_headers, timeout=15)
+            if res.status_code == 200:
+                posts = res.json().get('data', {}).get('children', [])
+                for p in posts:
+                    data = p['data']
+                    text = str(data.get('selftext', '')) + " " + str(data.get('title', ''))
+                    emails = re.findall(email_regex, text)
+                    if emails:
+                        discovered_leads.append({
+                            "company": str(data.get('title', ''))[:35],
+                            "url": "https://reddit.com" + str(data.get('permalink', '')),
+                            "students": "Reddit Post", "pay": "Check Post",
+                            "requirements": json.dumps(["See Details"]), "tags": json.dumps(["Social Media"]),
+                            "status": "Found Email", "email": emails[0]
+                        })
+        except: pass
 
-    # 2. جستجوی عمیق سایت های ESL (وارد شدن به داخل آگهی ها)
-    try:
-        res = requests.get("https://www.eslcafe.com/jobs/china", headers=headers, timeout=15)
-        soup = BeautifulSoup(res.text, "html.parser")
-        links = []
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            if '/job/' in href or 'jobs/china' in href:
-                links.append(href if href.startswith("http") else "https://www.eslcafe.com" + href)
-        
-        # ربات وارد 12 آگهی جدید می شود و متن کامل آنها را می خواند
-        for link in list(set(links))[:12]:
-            try:
-                job_res = requests.get(link, headers=headers, timeout=10)
-                job_soup = BeautifulSoup(job_res.text, "html.parser")
-                text = job_soup.get_text()
-                match = re.search(email_regex, text)
-                if match:
-                    company_name = job_soup.title.string.split('-')[0].strip()[:35] if job_soup.title else "ESL School"
-                    discovered_leads.append({
-                        "company": company_name, "url": link,
-                        "students": "China Job", "pay": "Negotiable",
-                        "requirements": json.dumps(["Degree"]), "tags": json.dumps(["Deep Scan"]),
-                        "status": "Actively Hiring", "email": match.group(0)
-                    })
-            except:
-                pass
-    except Exception as e:
-        pass
+    # 2. Aggressive Deep Scan of ESL Cafe
+    esl_sources = ["https://www.eslcafe.com/jobs/china", "https://www.eslcafe.com/jobs/international"]
+    for url in esl_sources:
+        try:
+            res = requests.get(url, headers=headers, timeout=15)
+            soup = BeautifulSoup(res.text, "html.parser")
+            links = []
+            for a in soup.find_all("a", href=True):
+                if "/job/" in a["href"] or "jobs/" in a["href"]:
+                    full_link = a["href"] if a["href"].startswith("http") else "https://www.eslcafe.com" + a["href"]
+                    links.append(full_link)
+            
+            # Go deep into the first 12 unique job ads
+            for link in list(set(links))[:12]:
+                try:
+                    job_res = requests.get(link, headers=headers, timeout=10)
+                    job_soup = BeautifulSoup(job_res.text, "html.parser")
+                    text = job_soup.get_text(separator=" ")
+                    emails = re.findall(email_regex, text)
+                    if emails:
+                        title = job_soup.title.string.split('-')[0].strip()[:35] if job_soup.title else "ESL Opportunity"
+                        discovered_leads.append({
+                            "company": title, "url": link, "students": "ESL Cafe", 
+                            "pay": "Negotiable", "requirements": json.dumps(["Degree"]), 
+                            "tags": json.dumps(["Deep Scan"]), "status": "Hiring",
+                            "email": emails[0]
+                        })
+                except: pass
+        except: pass
 
-    # ذخیره و ارسال
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
     for lead in discovered_leads:
         try:
-            if lead["email"]:
-                draft_status = create_gmail_draft(lead["company"], lead["email"])
-                if draft_status != "No Target Email" and draft_status != "Failed":
-                    c.execute(
-                        "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
-                    )
-                    conn.commit()
-                    send_telegram(lead["company"], lead["url"], lead["pay"])
+            # Create draft first
+            draft_status = create_gmail_draft(lead["company"], lead["email"])
+            
+            # Insert into database (if it's a duplicate URL, this will throw IntegrityError and skip)
+            c.execute(
+                "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
+            )
+            conn.commit()
+            
+            # Send Telegram Alert ONLY if it's a brand new lead successfully added to DB
+            send_telegram(lead["company"], lead["url"], lead["pay"], lead["email"])
+            
         except sqlite3.IntegrityError:
-            pass # نادیده گرفتن تکراری ها
+            pass # Already exists in database, ignore it
     conn.close()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Scan Complete.")
 
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
