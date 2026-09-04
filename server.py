@@ -6,6 +6,7 @@ import requests
 import imaplib
 import json
 import re
+import urllib.parse
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
@@ -58,16 +59,16 @@ def get_settings():
         return {"subject": row[0], "body": row[1], "gmail_user": row[2], "gmail_pass": row[3], "telegram_token": row[4], "telegram_chat_id": row[5]}
     return {}
 
-def send_telegram(company, url, pay, email):
+def send_telegram(company, url, pay, email=""):
     settings = get_settings()
-    token = settings.get("telegram_token", "")
-    chat_id = settings.get("telegram_chat_id", "")
+    token = settings.get("telegram_token", "").strip()
+    chat_id = settings.get("telegram_chat_id", "").strip()
     if not token or not chat_id: 
         return
 
-    text = f"🎯 New ESL Opportunity!\n\n🏢 Company: {company}\n💰 Pay: {pay}\n📧 Email: {email}\n🔗 Link: {url}"
+    text = f"🎯 New ESL Opportunity!\n\n🏢 Company/Source: {company}\n💰 Pay: {pay}\n📧 Email Found: {email}\n🔗 Link: {url}"
     try:
-        requests.post(f"https://api.telegram.org/bot{token.strip()}/sendMessage", json={"chat_id": chat_id.strip(), "text": text}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
         print("Telegram Send Error:", e)
 
@@ -80,7 +81,7 @@ def create_gmail_draft(company, target_email=""):
 
     if not user or not password: return "No Credentials"
     
-    # Strict rule: Must have email, and it must not be user's own email
+    # Strict Rule: Must have a valid target email to create a draft
     if not target_email or "@" not in target_email or target_email.lower() == user.lower():
         return "No Target Email"
     
@@ -102,18 +103,60 @@ def create_gmail_draft(company, target_email=""):
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Global Search Engine Active...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Global Scraper Active...")
     discovered_leads = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
-    # Strict Regex: domain extension between 2 and 7 chars to avoid things like .composition
-    email_regex = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,7}\b"
+    # Using real browser headers to prevent blocks
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
     
-    # 1. Standard ESL Targets
+    # Strict regex: domain extensions must be between 2 and 7 letters (prevents .composition errors)
+    email_regex = r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,7}\b"
+    
+    # 1. Search Global Web & Facebook via DuckDuckGo HTML (Bypasses Google/Bing blocks)
+    search_queries = [
+        'site:facebook.com "English teacher" China hiring email "@gmail.com"',
+        'site:facebook.com "ESL teacher" China email "@yahoo.com"',
+        '"ESL teacher" China hiring "send resume" "@"'
+    ]
+    
+    for query in search_queries:
+        try:
+            # DuckDuckGo HTML version is scraper-friendly
+            res = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                
+                for a in soup.find_all('a', class_='result__snippet'):
+                    snippet = a.get_text(strip=True)
+                    href = a.get('href', '')
+                    
+                    # Clean up DuckDuckGo redirect URLs
+                    if href.startswith('//'): href = 'https:' + href
+                    if "uddg=" in href:
+                        parsed = urllib.parse.urlparse(href)
+                        qs = urllib.parse.parse_qs(parsed.query)
+                        if 'uddg' in qs:
+                            href = qs['uddg'][0]
+                    
+                    # Only add if an email is found in the search text!
+                    match = re.search(email_regex, snippet)
+                    if match:
+                        discovered_leads.append({
+                            "company": "Web Opportunity", "url": href[:200], 
+                            "students": "Global Web", "pay": "Negotiable", 
+                            "requirements": json.dumps(["Web Search"]), "tags": json.dumps(["Facebook/Web"]), 
+                            "status": "Found", "email": match.group(0)
+                        })
+        except Exception as e:
+            print(f"Web Search Error: {e}")
+
+    # 2. Standard ESL Targets
     targets = [
         "https://www.eslcafe.com/jobs/china",
-        "https://www.eslcafe.com/jobs/international",
-        "https://teast.co/jobs"
+        "https://www.eslcafe.com/jobs/international"
     ]
     
     for url in targets:
@@ -123,57 +166,20 @@ def global_web_scraper():
                 soup = BeautifulSoup(res.text, "html.parser")
                 for link in soup.find_all("a", href=True):
                     title = link.get_text(strip=True)
-                    if len(title) > 8 and any(k in title.lower() for k in ["esl", "english", "teacher", "online", "china", "tutor"]):
+                    if len(title) > 8 and any(k in title.lower() for k in ["esl", "english", "teacher", "china"]):
                         href = link["href"]
                         full_url = href if href.startswith("http") else f"https://www.eslcafe.com{href}"
                         
                         extracted_email = ""
-                        if href.startswith("mailto:"):
-                            extracted_email = href.replace("mailto:", "").split("?")[0].strip()
-                        else:
-                            match = re.search(email_regex, title)
-                            if match:
-                                extracted_email = match.group(0)
+                        match = re.search(email_regex, title)
+                        if match: extracted_email = match.group(0)
 
                         if extracted_email:
                             discovered_leads.append({
-                                "company": title.split("-")[0].strip()[:35], "url": full_url, "students": "Various", 
-                                "pay": "Negotiable", "requirements": json.dumps(["BA Degree"]), 
-                                "tags": json.dumps(["Job Board"]), "status": "Actively Hiring",
-                                "email": extracted_email
-                            })
-        except Exception as e:
-            pass
-
-    # 2. Bing Search for Facebook & Global Web
-    search_queries = [
-        "site:facebook.com 'English teacher' China hiring '@gmail.com'",
-        "site:facebook.com 'ESL teacher' China email '@'",
-        "'ESL teacher' China 'send resume' '@'"
-    ]
-    
-    for query in search_queries:
-        try:
-            res = requests.get("https://www.bing.com/search", params={"q": query}, headers=headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "html.parser")
-                for result in soup.find_all("li", class_="b_algo"):
-                    title_tag = result.find("h2")
-                    link_tag = result.find("a", href=True)
-                    snippet_tag = result.find("div", class_="b_caption")
-                    
-                    if title_tag and link_tag:
-                        title = title_tag.get_text(strip=True)
-                        full_url = link_tag["href"]
-                        snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
-                        
-                        match = re.search(email_regex, title + " " + snippet)
-                        if match:
-                            discovered_leads.append({
-                                "company": title[:30] + "...", "url": full_url, 
-                                "students": "Global Web", "pay": "Negotiable", 
-                                "requirements": json.dumps(["Web Search"]), "tags": json.dumps(["Facebook/Web"]), 
-                                "status": "Found", "email": match.group(0)
+                                "company": title.split("-")[0].strip()[:35], "url": full_url, 
+                                "students": "Various", "pay": "Negotiable", 
+                                "requirements": json.dumps(["BA Degree"]), "tags": json.dumps(["ESL Hub"]), 
+                                "status": "Actively Hiring", "email": extracted_email
                             })
         except Exception as e:
             pass
@@ -184,7 +190,7 @@ def global_web_scraper():
         try:
             draft_status = create_gmail_draft(lead["company"], lead.get("email", ""))
             
-            # Only record and send telegram if draft wasn't skipped due to no target email
+            # Save to DB only if a target email was found and draft wasn't skipped
             if draft_status != "No Target Email":
                 c.execute(
                     "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -193,7 +199,7 @@ def global_web_scraper():
                 conn.commit()
                 send_telegram(lead["company"], lead["url"], lead["pay"], lead["email"])
         except sqlite3.IntegrityError:
-            pass # Skip duplicates so we don't spam
+            pass # Skips duplicate URLs silently
     conn.close()
 
 @app.route("/api/leads", methods=["GET"])
@@ -221,12 +227,12 @@ def api_settings():
         conn.commit()
         conn.close()
         
-        # Send Test Message to Telegram when settings are saved
+        # Test Telegram Message on save
         token = data.get("telegram_token", "").strip()
         chat_id = data.get("telegram_chat_id", "").strip()
         if token and chat_id:
             try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected! Everything is ready."}, timeout=5)
+                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected and Ready!"}, timeout=5)
             except: pass
             
         return jsonify({"status": "success"})
