@@ -62,13 +62,17 @@ def send_telegram(company, url, pay):
     settings = get_settings()
     token = settings.get("telegram_token", "")
     chat_id = settings.get("telegram_chat_id", "")
-    if not token or not chat_id: return
+    if not token or not chat_id: 
+        print("Telegram Warning: Token or Chat ID is missing.")
+        return
 
-    text = f"🎯 *New ESL Opportunity!*\n\n🏢 *Company:* {company}\n💰 *Pay:* {pay}\n🔗 *Link:* {url}"
+    # ارسال به صورت متن ساده بدون Markdown تا هیچ‌وقت به خاطر کاراکترهای خاص ارور ندهد
+    text = f"🎯 New ESL Opportunity!\n\n🏢 Company: {company}\n💰 Pay: {pay}\n🔗 Link: {url}"
     try:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
-    except:
-        pass
+        res = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+        print("Telegram API Response:", res.status_code, res.text)
+    except Exception as e:
+        print("Telegram Send Error:", e)
 
 def create_gmail_draft(company, target_email=""):
     settings = get_settings()
@@ -79,7 +83,6 @@ def create_gmail_draft(company, target_email=""):
 
     if not user or not password: return "No Credentials"
     
-    # اگر ایمیل معتبر شرکت وجود نداشت یا ایمیل خودتان بود، اصلاً پیش‌نویس ساخته نمی‌شود
     if not target_email or "@" not in target_email or target_email.lower() == user.lower():
         return "No Target Email"
     
@@ -198,5 +201,5 @@ def run_loop():
 if __name__ == "__main__":
     init_db()
     Thread(target=run_loop, daemon=True).start()
-    port = int(os.environ.0.get("PORT", 10000) if "PORT" in os.environ else 10000)
+    port = int(os.environ.get("PORT", 10000) if "PORT" in os.environ else 10000)
     app.run(host="0.0.0.0", port=port)
