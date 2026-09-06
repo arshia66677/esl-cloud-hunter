@@ -5,11 +5,13 @@ import schedule
 import requests
 import imaplib
 import json
+import re
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from threading import Thread
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 CORS(app)
@@ -60,13 +62,13 @@ def get_settings():
         return {"subject": row[0], "body": row[1], "gmail_user": row[2], "gmail_pass": row[3], "telegram_token": row[4], "telegram_chat_id": row[5]}
     return {}
 
-def send_telegram(company, url, pay, email_found):
+def send_telegram(company, url, email_found):
     settings = get_settings()
     token = settings.get("telegram_token", "").strip()
     chat_id = settings.get("telegram_chat_id", "").strip()
     if not token or not chat_id: return
 
-    text = f"🌟 آگهی جدید استخدام مدرس ESL 🌟\n\n🏢 شرکت: {company}\n💰 حقوق: {pay}\n📧 ایمیل: {email_found}\n🔗 لینک: {url}"
+    text = f"✅ Valid Job Found & Draft Created!\n\n🏢 Source: {company}\n📧 Email: {email_found}\n🔗 Link: {url}"
     try:
         for cid in chat_id.split(','):
             if cid.strip():
@@ -82,12 +84,7 @@ def create_gmail_draft(company, target_email=""):
     body_template = settings.get("body", "")
 
     if not user or not password: return "No Credentials"
-    if not target_email or "@" not in target_email or target_email.lower() == user.lower():
-        return "No Target Email"
-    
-    domain_ext = target_email.split(".")[-1]
-    if len(domain_ext) < 2 or len(domain_ext) > 7:
-        return "Invalid Email Domain"
+    if not target_email or "@" not in target_email: return "No Email"
     
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
@@ -107,81 +104,80 @@ def create_gmail_draft(company, target_email=""):
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🧠 Gemini AI Search Engine Active...", flush=True)
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        print("❌ GEMINI_API_KEY not found in environment variables!", flush=True)
-        return
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Standard Web Scraper Active...", flush=True)
+    discovered_leads = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    # Strict Regex: Matches emails, ignores fake extensions
+    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 
-    prompt = '''
-    Search the live web (including job boards, Facebook public pages, and Chinese ESL sites) for recent, valid job postings matching: "Online ESL teacher for China students email apply". 
-    CRITICAL INSTRUCTIONS: 
-    1. YOU MUST USE THE GOOGLE SEARCH TOOL to find real, currently active websites. 
-    2. ONLY extract jobs where a REAL email address is explicitly written in the webpage or search snippet.
-    3. DO NOT make up or hallucinate URLs or emails. If you can't find real ones, return an empty array.
-    
-    Return the result STRICTLY as a JSON object with this format:
-    {
-      "jobs": [
-        {
-          "company": "Company Name (Real)",
-          "url": "https://exact-real-link.com/job-post",
-          "email": "hiring@realcompany.com",
-          "salary": "$20-$30/hr or null if not mentioned"
-        }
-      ]
-    }
-    '''
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "tools": [{"googleSearch": {}}],
-        "generationConfig": {"responseMimeType": "application/json"}
-    }
+    # 1. Scrape Reddit Communities
+    reddit_sources = [
+        "https://www.reddit.com/r/TEFL/search.json?q=china+hiring&restrict_sr=1&sort=new",
+        "https://www.reddit.com/r/ChinaJobs/new.json?limit=15"
+    ]
+    for url in reddit_sources:
+        try:
+            res = requests.get(url, headers=headers, timeout=15)
+            if res.status_code == 200:
+                for child in res.json().get("data", {}).get("children", []):
+                    post = child.get("data", {})
+                    title = post.get("title", "")
+                    text = post.get("selftext", "")
+                    link = "https://www.reddit.com" + post.get("permalink", "")
+                    
+                    match = re.search(email_regex, title + " " + text)
+                    if match:
+                        email = match.group(0)
+                        domain = email.split(".")[-1].lower()
+                        # Strict domain length check (drops .composition, .png, etc.)
+                        if 2 <= len(domain) <= 4 and domain not in ['png', 'jpg', 'gif']:
+                            discovered_leads.append({"company": title[:40], "url": link, "email": email})
+        except Exception as e:
+            print(f"Reddit Scrape Error: {e}", flush=True)
 
+    # 2. Scrape Google News RSS for live postings
     try:
-        print("🚀 Sending request to Google Gemini API...", flush=True)
-        res = requests.post(url, json=payload, timeout=60)
-        if res.status_code != 200:
-            print(f"❌ Gemini API Request Failed. Status: {res.status_code}, Error: {res.text}", flush=True)
-            return
-        
-        data = res.json()
-        text_response = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-        
-        if not text_response:
-            print("❌ Empty response from Gemini.", flush=True)
-            return
-            
-        parsed_data = json.loads(text_response)
-        jobs = parsed_data.get("jobs", [])
-        print(f"✅ AI found {len(jobs)} valid opportunities!", flush=True)
+        rss_url = "https://news.google.com/rss/search?q=%22English+teacher%22+China+hiring+email&hl=en-US&gl=US&ceid=US:en"
+        res = requests.get(rss_url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "xml")
+            for item in soup.find_all("item"):
+                title = item.title.text if item.title else ""
+                link = item.link.text if item.link else ""
+                desc = item.description.text if item.description else ""
+                
+                match = re.search(email_regex, title + " " + desc)
+                if match:
+                    email = match.group(0)
+                    domain = email.split(".")[-1].lower()
+                    if 2 <= len(domain) <= 4 and domain not in ['png', 'jpg', 'gif']:
+                        discovered_leads.append({"company": title[:40], "url": link, "email": email})
+    except Exception as e:
+        print(f"Google RSS Error: {e}", flush=True)
 
-        conn = sqlite3.connect("cloud_leads.db")
-        c = conn.cursor()
-        new_leads = 0
-        for job in jobs:
-            if not job.get("email"): continue
+    # Database Validation & Saving
+    conn = sqlite3.connect("cloud_leads.db")
+    c = conn.cursor()
+    new_leads = 0
+    
+    for lead in discovered_leads:
+        c.execute("SELECT id FROM leads WHERE url = ?", (lead["url"],))
+        if not c.fetchone(): # If URL is not in database
+            draft_status = create_gmail_draft(lead["company"], lead["email"])
             
-            try:
-                draft_status = create_gmail_draft(job["company"], job["email"])
+            # ONLY save and send if draft was successful
+            if draft_status == "Drafted":
                 c.execute(
                     "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (job["company"], job["url"], "Chinese Students", job.get("salary", "N/A"), '["AI Verified"]', '["ESL"]', datetime.now().strftime("%Y-%m-%d"), "Found", draft_status)
+                    (lead["company"], lead["url"], "ESL", "Check Link", '["Verified"]', '["Scraped"]', datetime.now().strftime("%Y-%m-%d"), "Found", draft_status)
                 )
                 conn.commit()
-                send_telegram(job["company"], job["url"], job.get("salary", "N/A"), job["email"])
+                send_telegram(lead["company"], lead["url"], lead["email"])
                 new_leads += 1
-            except sqlite3.IntegrityError:
-                print(f"⏩ Skipped duplicate lead: {job['url']}", flush=True)
                 
-        conn.close()
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Engine Scan Complete. Saved {new_leads} NEW opportunities to DB.", flush=True)
-        
-    except Exception as e:
-        print("❌ AI Search Error:", e, flush=True)
+    conn.close()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Scrape Complete. Sent {new_leads} VALID leads.", flush=True)
 
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
@@ -212,7 +208,7 @@ def api_settings():
 
 @app.route("/api/force_scan", methods=["POST"])
 def force_scan():
-    print("▶️ FORCE SCAN BUTTON CLICKED FROM APP!", flush=True)
+    print("▶️ FORCE SCAN CLICKED!", flush=True)
     Thread(target=global_web_scraper).start()
     return jsonify({"status": "Global Scan started"})
 
