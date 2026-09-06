@@ -106,9 +106,10 @@ def create_gmail_draft(company, target_email=""):
 def global_web_scraper():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Standard Web Scraper Active...", flush=True)
     discovered_leads = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
-    # Strict Regex: Matches emails, ignores fake extensions
+    # Upgraded User-Agent so Reddit doesn't block the request
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 ESLScraper/1.0"}
+    
     email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 
     # 1. Scrape Reddit Communities
@@ -130,18 +131,18 @@ def global_web_scraper():
                     if match:
                         email = match.group(0)
                         domain = email.split(".")[-1].lower()
-                        # Strict domain length check (drops .composition, .png, etc.)
                         if 2 <= len(domain) <= 4 and domain not in ['png', 'jpg', 'gif']:
                             discovered_leads.append({"company": title[:40], "url": link, "email": email})
         except Exception as e:
             print(f"Reddit Scrape Error: {e}", flush=True)
 
-    # 2. Scrape Google News RSS for live postings
+    # 2. Scrape Google News RSS (Fixed Parser)
     try:
         rss_url = "https://news.google.com/rss/search?q=%22English+teacher%22+China+hiring+email&hl=en-US&gl=US&ceid=US:en"
         res = requests.get(rss_url, headers=headers, timeout=15)
         if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "xml")
+            # Switched to Python's built-in html.parser to fix the crash
+            soup = BeautifulSoup(res.text, "html.parser")
             for item in soup.find_all("item"):
                 title = item.title.text if item.title else ""
                 link = item.link.text if item.link else ""
@@ -163,10 +164,9 @@ def global_web_scraper():
     
     for lead in discovered_leads:
         c.execute("SELECT id FROM leads WHERE url = ?", (lead["url"],))
-        if not c.fetchone(): # If URL is not in database
+        if not c.fetchone():
             draft_status = create_gmail_draft(lead["company"], lead["email"])
             
-            # ONLY save and send if draft was successful
             if draft_status == "Drafted":
                 c.execute(
                     "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
