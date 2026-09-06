@@ -6,6 +6,7 @@ import imaplib
 import json
 import re
 import random
+import sys
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
@@ -53,7 +54,7 @@ def init_db():
         conn.commit()
         conn.close()
     except Exception as e:
-        print("Database Init Error:", e)
+        print("Database Init Error:", e, flush=True)
 
 def get_settings():
     try:
@@ -65,7 +66,7 @@ def get_settings():
         if row:
             return {"subject": row[0], "body": row[1], "gmail_user": row[2], "gmail_pass": row[3], "telegram_token": row[4], "telegram_chat_id": row[5]}
     except Exception as e:
-        print("Get Settings Error:", e)
+        print("Get Settings Error:", e, flush=True)
     return {}
 
 def send_telegram(company, url, email_found, pay):
@@ -73,14 +74,16 @@ def send_telegram(company, url, email_found, pay):
     token = settings.get("telegram_token", "").strip()
     chat_id = settings.get("telegram_chat_id", "").strip()
     if not token or not chat_id: 
+        print("Telegram skipped: No token or chat ID", flush=True)
         return
 
     text = f"🌟 NEW ESL JOB FOUND!\n\n🏢 Company: {company}\n📧 Email: {email_found}\n💰 Pay: {pay}\n🔗 Link: {url}"
     
     try:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+        res = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+        print("Telegram Response:", res.status_code, res.text, flush=True)
     except Exception as e:
-        print("Telegram Send Error:", e)
+        print("Telegram Send Error:", e, flush=True)
 
 def create_gmail_draft(company, target_email=""):
     settings = get_settings()
@@ -89,13 +92,13 @@ def create_gmail_draft(company, target_email=""):
     subject_template = settings.get("subject", "")
     body_template = settings.get("body", "")
 
-    if not user or not password: return "No Credentials"
+    if not user or not password: 
+        print("Draft skipped: No Gmail credentials in settings.", flush=True)
+        return "No Credentials"
     
-    # Strict rule: Only create draft if a valid email is found
     if not target_email or "@" not in target_email:
         return "Skipped (No Email)"
         
-    # Prevent creating drafts sending to ourselves or weird domains
     domain_ext = target_email.split(".")[-1]
     if target_email.lower() == user.lower() or len(domain_ext) > 7 or len(domain_ext) < 2:
         return "Invalid Email format"
@@ -113,30 +116,32 @@ def create_gmail_draft(company, target_email=""):
         
         mail.append('[Gmail]/Drafts', '', imaplib.Time2Internaldate(time.time()), str(msg).encode('utf-8'))
         mail.logout()
+        print(f"Draft created successfully for {target_email}", flush=True)
         return "Draft Created"
     except Exception as e:
-        print("Gmail Draft Error:", e)
+        print("Gmail Draft Error:", e, flush=True)
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Gemini AI Search Engine Active...")
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🌐 Gemini 1.5 Pro Search Engine Active...", flush=True)
     api_key = os.environ.get("GEMINI_API_KEY")
     discovered_leads = []
     
     if not api_key:
-        print("🚨 ERROR: GEMINI_API_KEY is missing in Render Environment Variables!")
+        print("🚨 ERROR: GEMINI_API_KEY is missing in Render Environment Variables!", flush=True)
         return
 
-    # Using different queries every time it wakes up so it finds NEW jobs, not the same ones.
     queries = [
         "Online ESL teacher for China students email apply",
         "Hiring English teachers China online send CV",
         "TEFL online jobs China email resume",
         "ESL tutor needed China remote apply email"
     ]
+    selected_query = random.choice(queries)
+    print(f"🔍 Searching Google for: {selected_query}", flush=True)
     
     prompt = f"""
-    Search the live web (including job boards, Facebook public pages, and Chinese ESL sites) for recent, valid job postings matching: "{random.choice(queries)}". 
+    Search the live web (including job boards, Facebook public pages, and Chinese ESL sites) for recent, valid job postings matching: "{selected_query}". 
     CRITICAL INSTRUCTIONS: 
     1. YOU MUST USE THE GOOGLE SEARCH TOOL to find real, currently active websites. 
     2. ONLY extract jobs where a REAL email address (containing @) is explicitly written in the webpage or search snippet.
@@ -156,22 +161,22 @@ def global_web_scraper():
     """
 
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+        # Changed to gemini-1.5-pro for accurate tool usage and JSON extraction
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "tools": [{"googleSearch": {}}], # <-- این بخش تصحیح شد تا موتور جستجو واقعاً کار کند
+            "tools": [{"googleSearch": {}}],
             "generationConfig": {"responseMimeType": "application/json"}
         }
+        print("🚀 Sending request to Google Gemini API...", flush=True)
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=60)
         
         if res.status_code == 200:
+            print("✅ Received response from Gemini API!", flush=True)
             data = res.json()
             text_response = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
             
             if text_response:
-                print("Raw AI Response Length:", len(text_response)) # دیباگ در رندر
-                
-                # پاکسازی خطاهای مارک‌داون احتمالی هوش مصنوعی
                 clean_json = text_response.strip()
                 if clean_json.startswith("```json"):
                     clean_json = clean_json[7:-3].strip()
@@ -181,13 +186,14 @@ def global_web_scraper():
                 try:
                     parsed_data = json.loads(clean_json)
                     jobs = parsed_data.get('jobs', [])
+                    print(f"📊 Gemini found {len(jobs)} potential job entries.", flush=True)
+                    
                     for job in jobs:
                         email = job.get('email', '')
                         url_link = job.get('url', '')
                         company = str(job.get('company', 'Unknown School'))[:40]
                         salary = str(job.get('salary', 'Negotiable'))
                         
-                        # اعتبارسنجی ایمیل و لینک
                         if email and '@' in email and url_link and url_link.startswith('http') and "example.com" not in email:
                             discovered_leads.append({
                                 "company": company, 
@@ -200,33 +206,31 @@ def global_web_scraper():
                                 "email": email.strip()
                             })
                 except json.JSONDecodeError as je:
-                    print("JSON Parse Error:", je, "Raw Text:", text_response[:200])
+                    print("❌ JSON Parse Error:", je, "Raw Text:", text_response[:200], flush=True)
         else:
-            print("Gemini API Request Failed:", res.text)
+            print(f"❌ Gemini API Request Failed. Status: {res.status_code}, Error: {res.text}", flush=True)
     except Exception as e:
-        print("AI Search Error:", e)
+        print("❌ AI Search Error:", e, flush=True)
 
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
     
     new_leads_count = 0
     for lead in discovered_leads:
-        # Checking if this exact URL has already been found before
         c.execute("SELECT id FROM leads WHERE url = ?", (lead["url"],))
         if not c.fetchone():
+            print(f"🆕 New Job Added: {lead['company']} - {lead['email']}", flush=True)
             draft_status = create_gmail_draft(lead["company"], lead["email"])
             c.execute(
                 "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
             )
             conn.commit()
-            
-            # Send alert to telegram
             send_telegram(lead["company"], lead["url"], lead["email"], lead["pay"])
             new_leads_count += 1
             
     conn.close()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ AI Engine Scan Complete. Found {new_leads_count} new valid opportunities.")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ AI Engine Scan Complete. Saved {new_leads_count} new valid opportunities to DB.\n", flush=True)
 
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
@@ -253,12 +257,11 @@ def api_settings():
         conn.commit()
         conn.close()
         
-        # Immediate Telegram Test Ping
         token = data.get("telegram_token", "").strip()
         chat_id = data.get("telegram_chat_id", "").strip()
         if token and chat_id:
             try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected to Gemini AI Engine!"}, timeout=5)
+                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected to Gemini 1.5 AI!"}, timeout=5)
             except: pass
             
         return jsonify({"status": "success"})
@@ -266,27 +269,21 @@ def api_settings():
 
 @app.route("/api/force_scan", methods=["POST"])
 def force_scan():
+    print("▶️ FORCE SCAN BUTTON CLICKED FROM APP!", flush=True)
     Thread(target=global_web_scraper).start()
     return jsonify({"status": "Global Scan started"})
 
 def run_loop():
-    # Wait 5 seconds for the server to fully wake up
     time.sleep(5) 
-    
     while True:
         try:
-            # Run the AI Search Engine
             global_web_scraper()
         except Exception as e:
-            print("Loop Error:", e)
-        
-        # Sleep for exactly 20 minutes (1200 seconds), then repeat! 
-        # (This replaces the old schedule library that kept freezing)
+            print("Loop Error:", e, flush=True)
         time.sleep(1200)
 
 if __name__ == "__main__":
     init_db()
-    # Start the continuous 24/7 background loop
     Thread(target=run_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000) if "PORT" in os.environ else 10000)
     app.run(host="0.0.0.0", port=port)
