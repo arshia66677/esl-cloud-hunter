@@ -6,12 +6,12 @@ import requests
 import imaplib
 import json
 import re
+import xml.etree.ElementTree as ET
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from threading import Thread
-from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 CORS(app)
@@ -68,7 +68,7 @@ def send_telegram(company, url, email_found):
     chat_id = settings.get("telegram_chat_id", "").strip()
     if not token or not chat_id: return
 
-    text = f"✅ Valid Job Found & Draft Created!\n\n🏢 Source: {company}\n📧 Email: {email_found}\n🔗 Link: {url}"
+    text = f"✅ Valid Job + Email Found!\n\n🏢 Source: {company}\n📧 Email: {email_found}\n🔗 Link: {url}"
     try:
         for cid in chat_id.split(','):
             if cid.strip():
@@ -98,24 +98,22 @@ def create_gmail_draft(company, target_email=""):
         
         mail.append('[Gmail]/Drafts', '', imaplib.Time2Internaldate(time.time()), str(msg).encode('utf-8'))
         mail.logout()
-        return "Drafted"
+        return "Draft Created"
     except Exception as e:
         print("Gmail Draft Error:", e, flush=True)
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Standard Web Scraper Active...", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Scraper Active - Casting a massive net...", flush=True)
     discovered_leads = []
     
-    # Upgraded User-Agent so Reddit doesn't block the request
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 ESLScraper/1.0"}
-    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 
-    # 1. Scrape Reddit Communities
+    # 1. Scrape Reddit Communities (Broader Search)
     reddit_sources = [
-        "https://www.reddit.com/r/TEFL/search.json?q=china+hiring&restrict_sr=1&sort=new",
-        "https://www.reddit.com/r/ChinaJobs/new.json?limit=15"
+        "https://www.reddit.com/r/TEFL/search.json?q=hiring&restrict_sr=1&sort=new",
+        "https://www.reddit.com/r/OnlineESLTeaching/search.json?q=hiring&restrict_sr=1&sort=new"
     ]
     for url in reddit_sources:
         try:
@@ -127,57 +125,72 @@ def global_web_scraper():
                     text = post.get("selftext", "")
                     link = "https://www.reddit.com" + post.get("permalink", "")
                     
+                    # Try to find an email, but keep the job even if there isn't one
+                    email = ""
                     match = re.search(email_regex, title + " " + text)
                     if match:
-                        email = match.group(0)
-                        domain = email.split(".")[-1].lower()
+                        domain = match.group(0).split(".")[-1].lower()
                         if 2 <= len(domain) <= 4 and domain not in ['png', 'jpg', 'gif']:
-                            discovered_leads.append({"company": title[:40], "url": link, "email": email})
+                            email = match.group(0)
+                            
+                    discovered_leads.append({"company": title[:50], "url": link, "email": email})
         except Exception as e:
             print(f"Reddit Scrape Error: {e}", flush=True)
 
-    # 2. Scrape Google News RSS (Fixed Parser)
-    try:
-        rss_url = "https://news.google.com/rss/search?q=%22English+teacher%22+China+hiring+email&hl=en-US&gl=US&ceid=US:en"
-        res = requests.get(rss_url, headers=headers, timeout=15)
-        if res.status_code == 200:
-            # Switched to Python's built-in html.parser to fix the crash
-            soup = BeautifulSoup(res.text, "html.parser")
-            for item in soup.find_all("item"):
-                title = item.title.text if item.title else ""
-                link = item.link.text if item.link else ""
-                desc = item.description.text if item.description else ""
-                
-                match = re.search(email_regex, title + " " + desc)
-                if match:
-                    email = match.group(0)
-                    domain = email.split(".")[-1].lower()
-                    if 2 <= len(domain) <= 4 and domain not in ['png', 'jpg', 'gif']:
-                        discovered_leads.append({"company": title[:40], "url": link, "email": email})
-    except Exception as e:
-        print(f"Google RSS Error: {e}", flush=True)
+    # 2. Scrape Google News RSS (Fixed XML Parser & Broader Search)
+    rss_urls = [
+        "https://news.google.com/rss/search?q=%22ESL+teacher%22+hiring&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q=online+english+teacher+jobs&hl=en-US&gl=US&ceid=US:en"
+    ]
+    for rss_url in rss_urls:
+        try:
+            res = requests.get(rss_url, headers=headers, timeout=15)
+            if res.status_code == 200:
+                root = ET.fromstring(res.text)
+                for item in root.findall('.//item'):
+                    title = item.find('title').text if item.find('title') is not None else "Job Posting"
+                    link = item.find('link').text if item.find('link') is not None else ""
+                    desc = item.find('description').text if item.find('description') is not None else ""
+                    
+                    email = ""
+                    match = re.search(email_regex, title + " " + desc)
+                    if match:
+                        domain = match.group(0).split(".")[-1].lower()
+                        if 2 <= len(domain) <= 4 and domain not in ['png', 'jpg', 'gif']:
+                            email = match.group(0)
+                            
+                    discovered_leads.append({"company": title[:50], "url": link, "email": email})
+        except Exception as e:
+            print(f"Google RSS Error: {e}", flush=True)
 
-    # Database Validation & Saving
+    # Database Saving - SAVES EVERYTHING FOUND
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
     new_leads = 0
     
     for lead in discovered_leads:
+        if not lead["url"]: continue
         c.execute("SELECT id FROM leads WHERE url = ?", (lead["url"],))
         if not c.fetchone():
-            draft_status = create_gmail_draft(lead["company"], lead["email"])
+            # Default status
+            draft_status = "Link Only (No Email)"
             
-            if draft_status == "Drafted":
-                c.execute(
-                    "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (lead["company"], lead["url"], "ESL", "Check Link", '["Verified"]', '["Scraped"]', datetime.now().strftime("%Y-%m-%d"), "Found", draft_status)
-                )
-                conn.commit()
+            # If we found an email, try to make a draft
+            if lead["email"]:
+                draft_status = create_gmail_draft(lead["company"], lead["email"])
+                # Send telegram ONLY if we found an email
                 send_telegram(lead["company"], lead["url"], lead["email"])
-                new_leads += 1
+            
+            # Save to DB regardless of email presence so the dashboard fills up
+            c.execute(
+                "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (lead["company"], lead["url"], "ESL", "Check Link", '["Found"]', '["Scraped"]', datetime.now().strftime("%Y-%m-%d"), "Found", draft_status)
+            )
+            conn.commit()
+            new_leads += 1
                 
     conn.close()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Scrape Complete. Sent {new_leads} VALID leads.", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Scrape Complete. Pushed {new_leads} leads to Dashboard.", flush=True)
 
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
