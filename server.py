@@ -4,9 +4,7 @@ import sqlite3
 import requests
 import imaplib
 import json
-import re
 import random
-import sys
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
@@ -81,7 +79,7 @@ def send_telegram(company, url, email_found, pay):
     
     try:
         res = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
-        print("Telegram Response:", res.status_code, res.text, flush=True)
+        print("Telegram Response:", res.status_code, flush=True)
     except Exception as e:
         print("Telegram Send Error:", e, flush=True)
 
@@ -161,8 +159,8 @@ def global_web_scraper():
     """
 
     try:
-        # Changed to gemini-1.5-pro for accurate tool usage and JSON extraction
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={api_key}"
+        # FIX: Changed model name to gemini-1.5-pro-latest to fix the 404 Not Found error
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "tools": [{"googleSearch": {}}],
@@ -172,7 +170,7 @@ def global_web_scraper():
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=60)
         
         if res.status_code == 200:
-            print("✅ Received response from Gemini API!", flush=True)
+            print("✅ Received 200 OK from Gemini API!", flush=True)
             data = res.json()
             text_response = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
             
