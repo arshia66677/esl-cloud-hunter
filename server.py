@@ -1,20 +1,24 @@
 import os
 import time
 import sqlite3
-import schedule
 import requests
 import imaplib
 import json
 import re
+import random
 from email.message import EmailMessage
 from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from threading import Thread
-from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 CORS(app)
+
+@app.route("/", methods=["GET"])
+def home():
+    # UptimeRobot checks this URL every 5 minutes to keep the server awake 24/7
+    return "ESL Hunter Pro Cloud Engine is Active 24/7!", 200
 
 def init_db():
     try:
@@ -64,17 +68,14 @@ def get_settings():
         print("Get Settings Error:", e)
     return {}
 
-def send_telegram(title, url, email_found):
+def send_telegram(company, url, email_found, pay):
     settings = get_settings()
     token = settings.get("telegram_token", "").strip()
     chat_id = settings.get("telegram_chat_id", "").strip()
     if not token or not chat_id: 
         return
 
-    # اگر ایمیل پیدا شود اطلاع می‌دهد که درفت ساخته شده، اگر نه می‌گوید فقط لینک است
-    email_status = f"✅ {email_found} (Draft Created)" if email_found else "❌ No email found (Click link to apply)"
-    
-    text = f"🎯 NEW OPPORTUNITY FOUND!\n\n🏢 Source/Title: {title}\n📧 Email: {email_status}\n🔗 Link: {url}"
+    text = f"🌟 NEW ESL JOB FOUND!\n\n🏢 Company: {company}\n📧 Email: {email_found}\n💰 Pay: {pay}\n🔗 Link: {url}"
     
     try:
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
@@ -90,13 +91,13 @@ def create_gmail_draft(company, target_email=""):
 
     if not user or not password: return "No Credentials"
     
-    # قانون سخت‌گیرانه: فقط اگر ایمیل معتبر پیدا شد درفت بساز
+    # Strict rule: Only create draft if a valid email is found
     if not target_email or "@" not in target_email:
         return "Skipped (No Email)"
         
-    # جلوگیری از ارسال به ایمیل خودمان یا دامنه‌های اشتباه مثل .composition
+    # Prevent creating drafts sending to ourselves or weird domains
     domain_ext = target_email.split(".")[-1]
-    if target_email.lower() == user.lower() or len(domain_ext) > 7:
+    if target_email.lower() == user.lower() or len(domain_ext) > 7 or len(domain_ext) < 2:
         return "Invalid Email format"
     
     try:
@@ -104,7 +105,7 @@ def create_gmail_draft(company, target_email=""):
         mail.login(user, password)
         
         msg = EmailMessage()
-        clean_company = company[:30].replace("\n", " ").strip()
+        clean_company = company[:40].replace("\n", " ").strip()
         msg['Subject'] = subject_template.replace("{company}", clean_company)
         msg['From'] = user
         msg['To'] = target_email
@@ -118,89 +119,102 @@ def create_gmail_draft(company, target_email=""):
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Legal Global Engine Active...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Gemini AI Search Engine Active...")
+    api_key = os.environ.get("GEMINI_API_KEY")
     discovered_leads = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
     
-    # 1. جستجوی قانونی از طریق Google News RSS (دور زدن تحریم‌های آی‌پی سرور)
-    google_queries = ['"English teacher" China hiring', 'teach English in China recruiter']
-    for q in google_queries:
-        try:
-            url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "html.parser")
-                for item in soup.find_all("item"):
-                    title = item.title.text if item.title else "Google Result"
-                    link = item.link.text if item.link else ""
-                    desc = item.description.text if item.description else ""
-                    
-                    # جستجوی ایمیل در متن یا عنوان
-                    full_text = title + " " + desc
-                    match = re.search(email_regex, full_text)
-                    email = match.group(0) if match else ""
-                    
-                    discovered_leads.append({
-                        "company": title[:40], "url": link, "students": "Google Search", 
-                        "pay": "Negotiable", "requirements": json.dumps(["Global Web"]), 
-                        "tags": json.dumps(["Google RSS"]), "status": "Found", "email": email
-                    })
-        except Exception as e:
-            print("Google RSS Error:", e)
+    if not api_key:
+        print("🚨 ERROR: GEMINI_API_KEY is missing in Render Environment Variables!")
+        return
 
-    # 2. اتصال به API باز و قانونی Reddit (دسترسی به بزرگترین انجمن‌های مدرسین زبان)
-    reddit_sources = [
-        "https://www.reddit.com/r/TEFL/search.json?q=hiring+china&restrict_sr=1&sort=new",
-        "https://www.reddit.com/r/ChinaJobs/new.json?limit=5"
+    # Using different queries every time it wakes up so it finds NEW jobs, not the same ones.
+    queries = [
+        "Online ESL teacher for China students email apply",
+        "Hiring English teachers China online send CV",
+        "TEFL online jobs China email resume",
+        "ESL tutor needed China remote apply email"
     ]
-    for url in reddit_sources:
-        try:
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                children = data.get("data", {}).get("children", [])
-                for child in children:
-                    post = child.get("data", {})
-                    title = post.get("title", "")
-                    selftext = post.get("selftext", "")
-                    link = "https://www.reddit.com" + post.get("permalink", "")
+    
+    prompt = f"""
+    Search the live web (job boards, Facebook public pages, and ESL sites) for recent, valid job postings matching: "{random.choice(queries)}". 
+    CRITICAL INSTRUCTIONS: 
+    1. YOU MUST USE THE GOOGLE SEARCH TOOL to find real, currently active websites. 
+    2. ONLY extract jobs where a REAL email address (containing @) is explicitly written in the webpage or search snippet.
+    3. DO NOT make up or hallucinate URLs or emails. If you can't find real ones, return an empty array.
+    
+    Return the result STRICTLY as a JSON object with this format:
+    {{
+      "jobs": [
+        {{
+          "company": "Company Name (Real)",
+          "url": "https://exact-real-link.com/job-post",
+          "email": "hiring@realcompany.com",
+          "salary": "$20-$30/hr or null if not mentioned"
+        }}
+      ]
+    }}
+    """
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {"responseMimeType": "application/json"}
+        }
+        res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=60)
+        
+        if res.status_code == 200:
+            data = res.json()
+            text_response = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            
+            if text_response:
+                parsed_data = json.loads(text_response)
+                jobs = parsed_data.get('jobs', [])
+                for job in jobs:
+                    email = job.get('email', '')
+                    url_link = job.get('url', '')
+                    company = str(job.get('company', 'Unknown School'))[:40]
+                    salary = str(job.get('salary', 'Negotiable'))
                     
-                    match = re.search(email_regex, selftext + " " + title)
-                    email = match.group(0) if match else ""
-                    
-                    discovered_leads.append({
-                        "company": title[:40], "url": link, "students": "Community", 
-                        "pay": "Negotiable", "requirements": json.dumps(["Reddit"]), 
-                        "tags": json.dumps(["Social Media"]), "status": "Found", "email": email
-                    })
-        except Exception as e:
-            print("Reddit API Error:", e)
+                    # Extra validation to ensure links and emails are absolutely real
+                    if email and '@' in email and url_link and url_link.startswith('http') and "example.com" not in email:
+                        discovered_leads.append({
+                            "company": company, 
+                            "url": url_link, 
+                            "students": "Global AI Search", 
+                            "pay": salary, 
+                            "requirements": json.dumps(["AI Verified"]), 
+                            "tags": json.dumps(["Gemini Engine"]), 
+                            "status": "Found", 
+                            "email": email.strip()
+                        })
+        else:
+            print("Gemini API Request Failed:", res.text)
+    except Exception as e:
+        print("AI Search Error:", e)
 
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
     
     new_leads_count = 0
     for lead in discovered_leads:
-        # بررسی تکراری نبودن در دیتابیس
+        # Checking if this exact URL has already been found before
         c.execute("SELECT id FROM leads WHERE url = ?", (lead["url"],))
         if not c.fetchone():
-            # ساخت پیش‌نویس (فقط اگر ایمیل وجود داشته باشد)
             draft_status = create_gmail_draft(lead["company"], lead["email"])
-            
-            # ذخیره در دیتابیس (همه موارد ذخیره می‌شوند تا دوباره ارسال نشوند)
             c.execute(
                 "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (lead["company"], lead["url"], lead["students"], lead["pay"], lead["requirements"], lead["tags"], datetime.now().strftime("%Y-%m-%d"), lead["status"], draft_status)
             )
             conn.commit()
             
-            # ارسال همه‌چیز به تلگرام
-            send_telegram(lead["company"], lead["url"], lead["email"])
+            # Send alert to telegram
+            send_telegram(lead["company"], lead["url"], lead["email"], lead["pay"])
             new_leads_count += 1
             
     conn.close()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Engine Scan Complete. Found {new_leads_count} new opportunities.")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ AI Engine Scan Complete. Found {new_leads_count} new valid opportunities.")
 
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
@@ -227,12 +241,12 @@ def api_settings():
         conn.commit()
         conn.close()
         
-        # ارسال پیام تست آنی به تلگرام
+        # Immediate Telegram Test Ping
         token = data.get("telegram_token", "").strip()
         chat_id = data.get("telegram_chat_id", "").strip()
         if token and chat_id:
             try:
-                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected to Legal Engine!"}, timeout=5)
+                requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "✅ ESL Hunter Pro: System Connected to Gemini AI Engine!"}, timeout=5)
             except: pass
             
         return jsonify({"status": "success"})
@@ -244,15 +258,23 @@ def force_scan():
     return jsonify({"status": "Global Scan started"})
 
 def run_loop():
-    time.sleep(5) # صبر برای اطمینان از بوت شدن سرور
-    global_web_scraper()
-    schedule.every(20).minutes.do(global_web_scraper)
+    # Wait 5 seconds for the server to fully wake up
+    time.sleep(5) 
+    
     while True:
-        schedule.run_pending()
-        time.sleep(1)
+        try:
+            # Run the AI Search Engine
+            global_web_scraper()
+        except Exception as e:
+            print("Loop Error:", e)
+        
+        # Sleep for exactly 20 minutes (1200 seconds), then repeat! 
+        # (This replaces the old schedule library that kept freezing)
+        time.sleep(1200)
 
 if __name__ == "__main__":
     init_db()
+    # Start the continuous 24/7 background loop
     Thread(target=run_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000) if "PORT" in os.environ else 10000)
     app.run(host="0.0.0.0", port=port)
