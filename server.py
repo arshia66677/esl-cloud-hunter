@@ -121,7 +121,7 @@ def create_gmail_draft(company, target_email=""):
         return "Failed"
 
 def global_web_scraper():
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🌐 Gemini 1.5 Pro Search Engine Active...", flush=True)
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🌐 Gemini 1.5 Flash Search Engine Active...", flush=True)
     api_key = os.environ.get("GEMINI_API_KEY")
     discovered_leads = []
     
@@ -159,8 +159,8 @@ def global_web_scraper():
     """
 
     try:
-        # FIX: Changed model name to gemini-1.5-pro-latest to fix the 404 Not Found error
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={api_key}"
+        # THE FIX IS HERE: Changed to gemini-1.5-flash which is fully supported on free tier APIs
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "tools": [{"googleSearch": {}}],
