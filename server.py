@@ -68,7 +68,8 @@ def send_telegram(company, url, email_found):
     chat_id = settings.get("telegram_chat_id", "").strip()
     if not token or not chat_id: return
 
-    text = f"✅ Valid Job + Email Found!\n\n🏢 Source: {company}\n📧 Email: {email_found}\n🔗 Link: {url}"
+    email_display = email_found if email_found else "No email found (Check link)"
+    text = f"🎯 NEW JOB FOUND!\n\n🏢 Source: {company}\n📧 Email: {email_display}\n🔗 Link: {url}"
     try:
         for cid in chat_id.split(','):
             if cid.strip():
@@ -104,13 +105,13 @@ def create_gmail_draft(company, target_email=""):
         return "Failed"
 
 def global_web_scraper():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Scraper Active - Casting a massive net...", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 Scraper Active - Pulling all postings...", flush=True)
     discovered_leads = []
     
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 
-    # 1. Scrape Reddit Communities (Broader Search)
+    # 1. Scrape Reddit Communities
     reddit_sources = [
         "https://www.reddit.com/r/TEFL/search.json?q=hiring&restrict_sr=1&sort=new",
         "https://www.reddit.com/r/OnlineESLTeaching/search.json?q=hiring&restrict_sr=1&sort=new"
@@ -125,7 +126,6 @@ def global_web_scraper():
                     text = post.get("selftext", "")
                     link = "https://www.reddit.com" + post.get("permalink", "")
                     
-                    # Try to find an email, but keep the job even if there isn't one
                     email = ""
                     match = re.search(email_regex, title + " " + text)
                     if match:
@@ -137,7 +137,7 @@ def global_web_scraper():
         except Exception as e:
             print(f"Reddit Scrape Error: {e}", flush=True)
 
-    # 2. Scrape Google News RSS (Fixed XML Parser & Broader Search)
+    # 2. Scrape Google News RSS
     rss_urls = [
         "https://news.google.com/rss/search?q=%22ESL+teacher%22+hiring&hl=en-US&gl=US&ceid=US:en",
         "https://news.google.com/rss/search?q=online+english+teacher+jobs&hl=en-US&gl=US&ceid=US:en"
@@ -163,7 +163,7 @@ def global_web_scraper():
         except Exception as e:
             print(f"Google RSS Error: {e}", flush=True)
 
-    # Database Saving - SAVES EVERYTHING FOUND
+    # Database Saving - SAVES & SENDS EVERYTHING TO TELEGRAM
     conn = sqlite3.connect("cloud_leads.db")
     c = conn.cursor()
     new_leads = 0
@@ -172,16 +172,14 @@ def global_web_scraper():
         if not lead["url"]: continue
         c.execute("SELECT id FROM leads WHERE url = ?", (lead["url"],))
         if not c.fetchone():
-            # Default status
             draft_status = "Link Only (No Email)"
             
-            # If we found an email, try to make a draft
             if lead["email"]:
                 draft_status = create_gmail_draft(lead["company"], lead["email"])
-                # Send telegram ONLY if we found an email
-                send_telegram(lead["company"], lead["url"], lead["email"])
             
-            # Save to DB regardless of email presence so the dashboard fills up
+            # SEND EVERYTHING TO TELEGRAM (Whether email exists or not)
+            send_telegram(lead["company"], lead["url"], lead["email"])
+            
             c.execute(
                 "INSERT INTO leads (company, url, students, pay, requirements, tags, date, status, draft_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (lead["company"], lead["url"], "ESL", "Check Link", '["Found"]', '["Scraped"]', datetime.now().strftime("%Y-%m-%d"), "Found", draft_status)
@@ -190,7 +188,7 @@ def global_web_scraper():
             new_leads += 1
                 
     conn.close()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Scrape Complete. Pushed {new_leads} leads to Dashboard.", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Scrape Complete. Pushed {new_leads} leads to Dashboard & Telegram.", flush=True)
 
 @app.route("/api/leads", methods=["GET"])
 def api_leads():
