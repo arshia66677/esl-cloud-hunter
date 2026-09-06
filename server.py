@@ -136,7 +136,7 @@ def global_web_scraper():
     ]
     
     prompt = f"""
-    Search the live web (job boards, Facebook public pages, and ESL sites) for recent, valid job postings matching: "{random.choice(queries)}". 
+    Search the live web (including job boards, Facebook public pages, and Chinese ESL sites) for recent, valid job postings matching: "{random.choice(queries)}". 
     CRITICAL INSTRUCTIONS: 
     1. YOU MUST USE THE GOOGLE SEARCH TOOL to find real, currently active websites. 
     2. ONLY extract jobs where a REAL email address (containing @) is explicitly written in the webpage or search snippet.
@@ -159,7 +159,7 @@ def global_web_scraper():
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "tools": [{"google_search": {}}],
+            "tools": [{"googleSearch": {}}], # <-- این بخش تصحیح شد تا موتور جستجو واقعاً کار کند
             "generationConfig": {"responseMimeType": "application/json"}
         }
         res = requests.post(url, json=payload, headers={'Content-Type': 'application/json'}, timeout=60)
@@ -169,26 +169,38 @@ def global_web_scraper():
             text_response = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
             
             if text_response:
-                parsed_data = json.loads(text_response)
-                jobs = parsed_data.get('jobs', [])
-                for job in jobs:
-                    email = job.get('email', '')
-                    url_link = job.get('url', '')
-                    company = str(job.get('company', 'Unknown School'))[:40]
-                    salary = str(job.get('salary', 'Negotiable'))
-                    
-                    # Extra validation to ensure links and emails are absolutely real
-                    if email and '@' in email and url_link and url_link.startswith('http') and "example.com" not in email:
-                        discovered_leads.append({
-                            "company": company, 
-                            "url": url_link, 
-                            "students": "Global AI Search", 
-                            "pay": salary, 
-                            "requirements": json.dumps(["AI Verified"]), 
-                            "tags": json.dumps(["Gemini Engine"]), 
-                            "status": "Found", 
-                            "email": email.strip()
-                        })
+                print("Raw AI Response Length:", len(text_response)) # دیباگ در رندر
+                
+                # پاکسازی خطاهای مارک‌داون احتمالی هوش مصنوعی
+                clean_json = text_response.strip()
+                if clean_json.startswith("```json"):
+                    clean_json = clean_json[7:-3].strip()
+                elif clean_json.startswith("```"):
+                    clean_json = clean_json[3:-3].strip()
+
+                try:
+                    parsed_data = json.loads(clean_json)
+                    jobs = parsed_data.get('jobs', [])
+                    for job in jobs:
+                        email = job.get('email', '')
+                        url_link = job.get('url', '')
+                        company = str(job.get('company', 'Unknown School'))[:40]
+                        salary = str(job.get('salary', 'Negotiable'))
+                        
+                        # اعتبارسنجی ایمیل و لینک
+                        if email and '@' in email and url_link and url_link.startswith('http') and "example.com" not in email:
+                            discovered_leads.append({
+                                "company": company, 
+                                "url": url_link, 
+                                "students": "Global AI Search", 
+                                "pay": salary, 
+                                "requirements": json.dumps(["AI Verified"]), 
+                                "tags": json.dumps(["Gemini Engine"]), 
+                                "status": "Found", 
+                                "email": email.strip()
+                            })
+                except json.JSONDecodeError as je:
+                    print("JSON Parse Error:", je, "Raw Text:", text_response[:200])
         else:
             print("Gemini API Request Failed:", res.text)
     except Exception as e:
